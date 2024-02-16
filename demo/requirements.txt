@@ -4,3 +4,5 @@ streamlit
 streamlit_option_menu
 yfinance
 plotly
+scikit-learn
+prophet

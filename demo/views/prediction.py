@@ -2,6 +2,7 @@
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objs as go
+from prophet import Prophet
 
 def app():
     st.title('Stock Price Prediction')
@@ -46,10 +47,11 @@ def app():
 
     # 선택된 회사의 주식 데이터 가져오기
     data = get_stock_data(ticker, period, interval)
+    data = data.reset_index()
 
     # 캔들스틱 차트 생성
     fig = go.Figure(data=[go.Candlestick(
-        x=data.index,
+        x=data['Datetime'],
         open=data['Open'],
         high=data['High'],
         low=data['Low'],
@@ -74,8 +76,8 @@ def app():
         hour_format = '%H:%M'
         
         # 날짜와 첫 시간을 포함한 첫 번째 레이블 생성
-        first_label =  data.index[0].strftime(date_format) + ' ' + data.index[0].strftime(hour_format)
-        ticktext = [first_label] + [dt.strftime(hour_format) if (dt.hour % 1 == 0 and dt.minute == 0) else '' for dt in data.index[1:]]
+        first_label =  data['Datetime'][0].strftime(date_format) + ' ' + data['Datetime'][0].strftime(hour_format)
+        ticktext = [first_label] + [dt.strftime(hour_format) if (dt.hour % 1 == 0 and dt.minute == 0) else '' for dt in data['Datetime'][1:]]
         tickvals = data.index
         
         fig.update_xaxes(
@@ -89,11 +91,11 @@ def app():
         # 데이터 포인트에 따라 동적으로 tickvals와 ticktext 조정
         if len(data) > 0:
             # 데이터 포인트 간격 계산
-            step_size = max(len(data.index) // 10, 1)
+            step_size = max(len(data['Datetime']) // 10, 1)
             
             # 날짜 포맷을 'Aug 8' 형식으로 조정
-            ticktext = [date.strftime('%b %d') for date in data.index[::step_size]]
-            tickvals = data.index[::step_size]
+            ticktext = [date.strftime('%b %d') for date in data['Datetime'][::step_size]]
+            tickvals = data['Datetime'][::step_size]
             
             fig.update_xaxes(
                 tickmode='array',
@@ -106,8 +108,21 @@ def app():
             fig.update_xaxes(
                 type='category'
             )
+            
+    df_train = data[['Datetime', 'Close']].rename(columns={'Datetime': 'ds', 'Close': 'y'})
+    
+    # 'ds' 열에서 시간대 정보 제거
+    df_train['ds'] = df_train['ds'].dt.tz_localize(None)
+    
+    model = Prophet()
+    model.fit(df_train)
+    future = model.make_future_dataframe(periods=30)
+    forecast = model.predict(future)
+    
+    st.subheader("Forecast data")
 
-    # 차트 레이아웃 및 Streamlit에 차트 표시 부분은 동일하게 유지
-
+    fig1 = model.plot(forecast)
+    st.plotly_chart(fig1, use_container_width=True)
+    
     # Streamlit에 차트 표시
     st.plotly_chart(fig, use_container_width=True)
