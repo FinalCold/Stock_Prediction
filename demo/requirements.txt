@@ -84,11 +84,11 @@ wandb==0.16.2
 watchdog==4.0.0
 webencodings==0.5.1
 yapf==0.40.2
+opencv-python
 yfinance
 finance-datareader
 schedule
 ta-lib-bin
-torch==2.1.0
 grad-cam
 hmmlearn
 statsmodels
