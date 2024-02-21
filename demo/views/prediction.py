@@ -2,7 +2,16 @@
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objs as go
-from prophet import Prophet
+import sys
+from statsmodels.tsa.ar_model import AutoReg
+import datetime as dt
+from sklearn.preprocessing import MinMaxScaler
+import numpy as np
+import torch
+from .models.lstm.model import LSTM
+from .models.lstm.utils import load_data, predict, predict_dates
+from models import HMM
+from models import cnn_model_inference
 
 def app():
     st.title('Stock Price Prediction')
@@ -11,12 +20,20 @@ def app():
 
         # 회사 선택
         company_options = {
-            'Samsung': '005930.KS',
-            'Naver': '035420.KS',
-            'Kakao': '035720.KS',
-            'SK Hynix': '000660.KS'
+        "Tesla": "TSLA",
+        "Apple": "AAPL",
+        "Google": "GOOGL",
+        "Nvidia": "NVDA",
+        'Samsung': '005930.KS',
+        'Naver': '035420.KS',
+        'Kakao': '035720.KS',
+        'SK Hynix': '000660.KS',
+        "BTC-USD": "BTC-USD"
         }
-        company = st.selectbox('Choose a stock', list(company_options.keys()))
+        company_list = list(company_options.keys())
+        default_company_index = company_list.index('Naver')
+        company = st.selectbox('Choose a stock', company_list, index=default_company_index)
+
 
         # 기간 선택
         period = st.selectbox('Select period', options=[
@@ -47,11 +64,10 @@ def app():
 
     # 선택된 회사의 주식 데이터 가져오기
     data = get_stock_data(ticker, period, interval)
-    data = data.reset_index()
 
     # 캔들스틱 차트 생성
     fig = go.Figure(data=[go.Candlestick(
-        x=data['Datetime'],
+        x=data.index,
         open=data['Open'],
         high=data['High'],
         low=data['Low'],
@@ -76,8 +92,8 @@ def app():
         hour_format = '%H:%M'
         
         # 날짜와 첫 시간을 포함한 첫 번째 레이블 생성
-        first_label =  data['Datetime'][0].strftime(date_format) + ' ' + data['Datetime'][0].strftime(hour_format)
-        ticktext = [first_label] + [dt.strftime(hour_format) if (dt.hour % 1 == 0 and dt.minute == 0) else '' for dt in data['Datetime'][1:]]
+        first_label =  data.index[0].strftime(date_format) + ' ' + data.index[0].strftime(hour_format)
+        ticktext = [first_label] + [dt.strftime(hour_format) if (dt.hour % 1 == 0 and dt.minute == 0) else '' for dt in data.index[1:]]
         tickvals = data.index
         
         fig.update_xaxes(
@@ -87,15 +103,12 @@ def app():
             type='category'
         )
     else:
-        # '1d' 이외의 기간에 대해서는 'Aug 8' 형식으로 날짜 표시
-        # 데이터 포인트에 따라 동적으로 tickvals와 ticktext 조정
+
         if len(data) > 0:
-            # 데이터 포인트 간격 계산
-            step_size = max(len(data['Datetime']) // 10, 1)
+            step_size = max(len(data.index) // 10, 1)
             
-            # 날짜 포맷을 'Aug 8' 형식으로 조정
-            ticktext = [date.strftime('%b %d') for date in data['Datetime'][::step_size]]
-            tickvals = data['Datetime'][::step_size]
+            ticktext = [date.strftime('%b %d') for date in data.index[::step_size]]
+            tickvals = data.index[::step_size]
             
             fig.update_xaxes(
                 tickmode='array',
@@ -108,21 +121,159 @@ def app():
             fig.update_xaxes(
                 type='category'
             )
-            
-    df_train = data[['Datetime', 'Close']].rename(columns={'Datetime': 'ds', 'Close': 'y'})
-    
-    # 'ds' 열에서 시간대 정보 제거
-    df_train['ds'] = df_train['ds'].dt.tz_localize(None)
-    
-    model = Prophet()
-    model.fit(df_train)
-    future = model.make_future_dataframe(periods=30)
-    forecast = model.predict(future)
-    
-    st.subheader("Forecast data")
 
-    fig1 = model.plot(forecast)
-    st.plotly_chart(fig1, use_container_width=True)
-    
-    # Streamlit에 차트 표시
     st.plotly_chart(fig, use_container_width=True)
+
+    # Non-DL model matching 시각화
+    def generate_stock_prediction(stock_ticker, period, interval):
+    # Try to generate the predictions
+        try:
+            # Pull the data for the first security
+            stock_data = yf.Ticker(stock_ticker)
+
+            # Extract the data for last 1yr with 1d interval
+            stock_data_hist = stock_data.history(period=period, interval=interval)
+
+            # Clean the data for to keep only the required columns
+            stock_data_close = stock_data_hist[["Close"]]
+
+            # Change frequency to day
+            stock_data_close = stock_data_close.asfreq("D", method="ffill")
+
+            # Fill missing values
+            stock_data_close = stock_data_close.fillna(method="ffill")
+
+            # Define training and testing area
+            train_df = stock_data_close.iloc[: int(len(stock_data_close) * 0.9) + 1]  # 90%
+            test_df = stock_data_close.iloc[int(len(stock_data_close) * 0.9) :]  # 10%
+
+            # Define training model
+            model = AutoReg(train_df["Close"], 100).fit(cov_type="HC0")
+            # model = ARIMA(train_df["Close"], order=(0,0,0)).fit(trend='nc')
+
+            # Predict data for test data
+            predictions = model.predict(
+                start=test_df.index[0], end=test_df.index[-1], dynamic=True
+            )
+
+            # Predict 90 days into the future
+            forecast = model.predict(
+                start=test_df.index[0],
+                end=test_df.index[-1] + dt.timedelta(days=30),
+                dynamic=True,
+            )
+
+            # Return the required data
+            return train_df, test_df, forecast, predictions
+        # If error occurs
+        except:
+            # Return None
+            return None, None, None, None
+    
+    # Unpack the data
+    train_df, test_df, forecast, predictions = generate_stock_prediction(ticker, period, interval)
+    
+    # Check if the data is not None
+    if train_df is not None and (forecast >= 0).all() and (predictions >= 0).all():
+        # Add a title to the stock prediction graph
+        st.markdown("## **Non DL Stock Prediction**")
+
+        # Create a plot for the stock prediction
+        fig = go.Figure(
+            data=[
+                go.Scatter(
+                    x=train_df.index,
+                    y=train_df["Close"],
+                    name="Train",
+                    mode="lines",
+                    line=dict(color="blue"),
+                ),
+                go.Scatter(
+                    x=test_df.index,
+                    y=test_df["Close"],
+                    name="Test",
+                    mode="lines",
+                    line=dict(color="orange"),
+                ),
+                go.Scatter(
+                    x=forecast.index,
+                    y=forecast,
+                    name="Forecast",
+                    mode="lines",
+                    line=dict(color="red"),
+                ),
+                go.Scatter(
+                    x=test_df.index,
+                    y=predictions,
+                    name="Test Predictions",
+                    mode="lines",
+                    line=dict(color="green"),
+                ),
+            ]
+        )
+
+        # Customize the stock prediction graph
+        fig.update_layout(xaxis_rangeslider_visible=False)
+
+        # Use the native streamlit theme.
+        st.plotly_chart(fig, use_container_width=True)
+        
+    # If the data is None
+    else:
+        # Add a title to the stock prediction graph
+        st.markdown("## **Stock Prediction**")
+
+        # Add a message to the stock prediction graph
+        st.markdown("### **No data available for the selected stock**")    
+    if st.button("Start Non-DL model matching"):        
+        hmm = HMM(data)
+        predicted_close_prices = hmm.test_predictions()
+        fig = hmm.visualize_hmm(predicted_close_prices)
+        st.plotly_chart(fig, use_container_width=True) 
+        
+    # DL model matching 시각화
+    data_close = data[["Close"]]
+    data_close.fillna(method='pad')
+    
+    scaler = MinMaxScaler(feature_range=(-1, 1))
+    data_close_scaled = scaler.fit_transform(data_close.values.reshape(-1,1))
+        
+    look_back = 10 # choose sequence length
+    x_train, y_train, x_test, y_test = load_data(data_close_scaled, look_back)
+
+    x_train = torch.from_numpy(x_train).type(torch.Tensor)
+    x_test = torch.from_numpy(x_test).type(torch.Tensor)
+    y_train = torch.from_numpy(y_train).type(torch.Tensor)
+    y_test = torch.from_numpy(y_test).type(torch.Tensor)
+    
+    model = LSTM()
+    model_state_dict = torch.load('/data/ephemeral/home/level2-3-cv-finalproject-cv-01/streamlit/views/models/lstm/lstm.pth')
+    model.load_state_dict(model_state_dict)
+    
+    # make predictions
+    y_test_pred = model(x_test)
+
+    # invert predictions
+    y_test_pred = scaler.inverse_transform(y_test_pred.detach().numpy())
+    y_test = scaler.inverse_transform(y_test.detach().numpy())
+
+    # close_data 준비
+    close_data = scaler.transform(data_close.values.reshape(-1, 1)).flatten()
+
+    forecast = predict(10, model, close_data, look_back, scaler)
+    forecast_dates = predict_dates(10, data_close)
+
+    # 결과 시각화
+    real_price_trace = go.Scatter(x=data_close[len(data_close)-len(y_test):].index, y=y_test.flatten(), mode='lines', line=dict(color="orange"), name='Real Stock Price')
+    predicted_price_trace = go.Scatter(x=data_close[len(data_close)-len(y_test):].index, y=y_test_pred.flatten(), mode='lines', line=dict(color="green"), name='Predicted Stock Price')
+    forecast_price_trace = go.Scatter(x=forecast_dates, y=forecast, mode='lines', line=dict(color="red"), name='Forecasted Stock Price')
+
+    layout = go.Layout(title='LSTM Stock Price Prediction', xaxis=dict(title='Date'), yaxis=dict(title='Stock Price'))
+    fig2 = go.Figure(data=[real_price_trace, predicted_price_trace, forecast_price_trace], layout=layout)
+
+    st.plotly_chart(fig2)
+
+    # Image-based CNN model matching 시각화
+    cnn_model_inference( company, ticker, period, interval)
+        
+    
