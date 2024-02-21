@@ -10,8 +10,8 @@ import numpy as np
 import torch
 from .models.lstm.model import LSTM
 from .models.lstm.utils import load_data, predict, predict_dates
-from models import HMM
-from models import cnn_model_inference
+from .models import HMM
+from .models import cnn_model_inference
 
 def app():
     st.title('Stock Price Prediction')
